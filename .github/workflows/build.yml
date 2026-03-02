@@ -1,0 +1,85 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: engine-win-x64.exe
+            exe: dist/engine.exe
+            sep: ";"
+          - os: macos-latest
+            artifact: engine-mac-arm64
+            exe: dist/engine
+            sep: ":"
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install torch (CPU-only)
+        if: runner.os == 'Windows'
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install torch
+        if: runner.os == 'macOS'
+        run: pip install torch
+
+      - name: Install dependencies
+        run: pip install "deeprhythm>=0.0.13" "numpy>=1.24" "onnxruntime" "soundfile" pyinstaller
+
+      - name: Download model weights
+        run: python -c "from deeprhythm.utils import get_weights; get_weights()"
+
+      - name: Copy model to workspace
+        run: cp ~/.local/share/deeprhythm/deeprhythm-0.7.pth .
+
+      - name: Build executable
+        run: |
+          pyinstaller --onefile --name engine \
+            --collect-all deeprhythm \
+            --collect-all soundfile \
+            --collect-all onnxruntime \
+            --add-data "deeprhythm-0.7.pth${{ matrix.sep }}." \
+            --runtime-hook runtime_hook.py \
+            engine/__main__.py
+
+      - name: Rename artifact
+        run: mv "${{ matrix.exe }}" "dist/${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
